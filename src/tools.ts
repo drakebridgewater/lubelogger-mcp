@@ -7,9 +7,9 @@ import {
   type LubeLoggerClient,
   type RecordKind,
 } from "./lubelogger.js";
-import type { PendingStore } from "./pending.js";
+import type { PendingKind, PendingStore } from "./pending.js";
 
-interface Deps {
+export interface Deps {
   client: LubeLoggerClient;
   pending: PendingStore;
   ttlMinutes: number;
@@ -20,7 +20,7 @@ type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean
 const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
 const fail = (text: string): ToolResult => ({ isError: true, content: [{ type: "text", text }] });
 
-async function guard(fn: () => Promise<string>): Promise<ToolResult> {
+export async function guard(fn: () => Promise<string>): Promise<ToolResult> {
   try {
     return ok(await fn());
   } catch (err) {
@@ -28,22 +28,24 @@ async function guard(fn: () => Promise<string>): Promise<ToolResult> {
   }
 }
 
-const KIND_LABEL: Record<RecordKind, string> = {
+export const KIND_LABEL: Record<PendingKind, string> = {
   service: "Service record",
   repair: "Repair record",
   upgrade: "Upgrade record",
   fuel: "Fuel record",
   odometer: "Odometer record",
+  reminder: "New reminder",
+  reminderUpdate: "Reminder update",
 };
 
 // ---------- shared input fields ----------
 
-function isRealDate(s: string): boolean {
+export function isRealDate(s: string): boolean {
   const d = new Date(`${s}T00:00:00Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
 }
 
-const vehicleField = z
+export const vehicleField = z
   .union([z.string().min(1), z.number().int()])
   .describe("Vehicle id, or any part of its name/plate (e.g. 'tacoma' or 'ABC123'). Call list_vehicles if unsure.");
 
@@ -64,8 +66,8 @@ const odometerField = z
   );
 
 const moneyField = z.number().min(0).max(1_000_000);
-const tagsField = z.string().max(200).optional().describe("Space-separated tags, e.g. 'oil-change dealer'.");
-const notesField = z.string().max(4000).optional();
+export const tagsField = z.string().max(200).optional().describe("Space-separated tags, e.g. 'oil-change dealer'.");
+export const notesField = z.string().max(4000).optional();
 const extraFieldsField = z
   .array(z.object({ name: z.string().min(1), value: z.string() }))
   .optional()
@@ -73,7 +75,7 @@ const extraFieldsField = z
 
 // ---------- helpers ----------
 
-function normDate(raw: unknown): string | null {
+export function normDate(raw: unknown): string | null {
   const s = String(raw ?? "");
   const iso = s.match(/^(\d{4}-\d{2}-\d{2})/);
   if (iso) return iso[1]!;
@@ -81,14 +83,14 @@ function normDate(raw: unknown): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
 }
 
-function num(raw: unknown): number | null {
+export function num(raw: unknown): number | null {
   const s = String(raw ?? "").trim();
   if (s === "") return null;
   const n = Number(s.replace(/[^0-9.\-]/g, ""));
   return Number.isFinite(n) ? n : null;
 }
 
-const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+export const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 const daysBetween = (a: string, b: string) => (Date.parse(a) - Date.parse(b)) / 86_400_000;
 
 function findDuplicates(records: Record<string, unknown>[], date: string, odometer: number, cost?: number): string[] {
@@ -399,7 +401,12 @@ export function registerTools(server: McpServer, deps: Deps): void {
           throw new Error("Unknown or expired confirmation token. Run the propose_* tool again and re-confirm with the user.");
         }
         try {
-          const res = await client.addRecord(rec.kind, rec.vehicleId, rec.body);
+          const res =
+            rec.kind === "reminder"
+              ? await client.addReminder(rec.vehicleId, rec.body)
+              : rec.kind === "reminderUpdate"
+                ? await client.updateReminder(rec.body)
+                : await client.addRecord(rec.kind, rec.vehicleId, rec.body);
           return `Saved ${KIND_LABEL[rec.kind].toLowerCase()} for ${rec.vehicleLabel}. LubeLogger: ${res.message ?? "OK"}`;
         } catch (err) {
           // Definite rejection: nothing was written, so allow a retry with the same token.

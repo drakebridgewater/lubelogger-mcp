@@ -17,6 +17,23 @@ export interface Vehicle {
   [key: string]: unknown;
 }
 
+export type ReminderMetric = "Date" | "Odometer" | "Both";
+
+/** A reminder as returned by GET /api/vehicle/reminders. LubeLogger sends most values as strings. */
+export interface Reminder {
+  id: number | string;
+  description?: string;
+  urgency?: string;
+  metric?: string;
+  dueDate?: string;
+  dueOdometer?: number | string;
+  dueDays?: number | string;
+  dueDistance?: number | string;
+  notes?: string;
+  tags?: string;
+  [key: string]: unknown;
+}
+
 export interface OperationResponse {
   success?: boolean;
   message?: string;
@@ -45,7 +62,7 @@ export class LubeLoggerClient {
   ) {}
 
   private async request(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "PUT",
     path: string,
     opts: { query?: Query; body?: unknown } = {},
   ): Promise<unknown> {
@@ -72,7 +89,7 @@ export class LubeLoggerClient {
       const reason = err instanceof Error ? err.message : String(err);
       throw new LubeLoggerError(
         `Could not reach LubeLogger at ${this.baseUrl} (${reason}).` +
-          (method === "POST" ? " The record may or may not have been saved; check LubeLogger before retrying." : ""),
+          (method !== "GET" ? " The record may or may not have been saved; check LubeLogger before retrying." : ""),
         null,
         false,
       );
@@ -125,10 +142,28 @@ export class LubeLoggerClient {
     return Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
   }
 
+  async listReminders(vehicleId: number): Promise<Reminder[]> {
+    const data = await this.request("GET", "/api/vehicle/reminders", { query: { vehicleId } });
+    return Array.isArray(data) ? (data as Reminder[]) : [];
+  }
+
+  async addReminder(vehicleId: number, body: Record<string, unknown>): Promise<OperationResponse> {
+    return asResponse(await this.request("POST", "/api/vehicle/reminders/add", { query: { vehicleId }, body }));
+  }
+
+  /** LubeLogger overwrites every field on update, so body must be the full reminder (id included). PUT, not POST. */
+  async updateReminder(body: Record<string, unknown>): Promise<OperationResponse> {
+    return asResponse(await this.request("PUT", "/api/vehicle/reminders/update", { body }));
+  }
+
   async addRecord(kind: RecordKind, vehicleId: number, body: Record<string, unknown>): Promise<OperationResponse> {
     const data = await this.request("POST", `/api/vehicle/${PATHS[kind]}/add`, { query: { vehicleId }, body });
     return (data && typeof data === "object" ? data : { message: String(data ?? "") }) as OperationResponse;
   }
+}
+
+function asResponse(data: unknown): OperationResponse {
+  return (data && typeof data === "object" ? data : { message: String(data ?? "") }) as OperationResponse;
 }
 
 export function vehicleLabel(v: Vehicle): string {

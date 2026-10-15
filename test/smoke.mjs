@@ -27,8 +27,37 @@ const vehicles = [
 const latestOdo = { 1: 84900, 2: 120500 };
 const existing = {
   servicerecords: { 1: [{ id: 7, date: "2026-10-14", odometer: 84932, description: "Oil change", cost: 89.5 }] },
+  // Shaped like LubeLogger 1.7.3: values are strings, dueDate is ToShortDateString() in the invariant culture.
+  reminders: {
+    1: [
+      {
+        id: "3",
+        description: "Rotate Tires",
+        urgency: "NotUrgent",
+        metric: "Both",
+        dueDate: "04/15/2027",
+        dueOdometer: "92000",
+        dueDays: "182",
+        dueDistance: "7100",
+        notes: "Every 6k",
+        tags: "tires",
+      },
+      {
+        id: "4",
+        description: "Replace wiper blades",
+        urgency: "PastDue",
+        metric: "Date",
+        dueDate: "09/01/2026",
+        dueOdometer: "0",
+        dueDays: "-44",
+        dueDistance: "0",
+        notes: "",
+        tags: "",
+      },
+    ],
+  },
 };
-const posts = []; // { path, vehicleId, body }
+const posts = []; // { method, path, vehicleId, body }
 
 const mock = http.createServer((req, res) => {
   const url = new URL(req.url, "http://mock");
@@ -43,14 +72,18 @@ const mock = http.createServer((req, res) => {
   if (req.method === "GET" && url.pathname === "/api/vehicle/odometerrecords/latest") return send(200, latestOdo[vehicleId] ?? 0);
   const m = url.pathname.match(/^\/api\/vehicle\/(\w+)(\/add)?$/);
   if (m && req.method === "GET") return send(200, existing[m[1]]?.[vehicleId] ?? []);
-  if (m && m[2] && req.method === "POST") {
+  const write = (message) => {
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", () => {
-      posts.push({ path: url.pathname, vehicleId, body: JSON.parse(raw), contentType: req.headers["content-type"] });
-      send(200, { success: true, message: "Record Added" });
+      posts.push({ method: req.method, path: url.pathname, vehicleId, body: JSON.parse(raw), contentType: req.headers["content-type"] });
+      send(200, { success: true, message });
     });
-    return;
+  };
+  if (m && m[2] && req.method === "POST") return write("Record Added");
+  // The real update endpoint is PUT-only; POST returns 405.
+  if (url.pathname === "/api/vehicle/reminders/update") {
+    return req.method === "PUT" ? write("Reminder Record Updated") : send(405, { success: false, message: "Method Not Allowed" });
   }
   send(404, { success: false, message: "not found" });
 });
@@ -114,12 +147,15 @@ async function main() {
     assert.deepEqual(tools, [
       "commit_record",
       "get_latest_odometer",
+      "list_reminders",
       "list_vehicles",
       "propose_fuel_record",
       "propose_odometer_record",
+      "propose_reminder",
+      "propose_reminder_update",
       "propose_service_record",
     ]);
-    pass("lists all 6 tools");
+    pass("lists all 9 tools");
 
     const lv = text(await client.callTool({ name: "list_vehicles", arguments: {} }));
     assert.match(lv, /Tacoma/);
@@ -229,6 +265,103 @@ async function main() {
     assert.equal(posts.at(-1).body.initialOdometer, 84900);
     assert.equal(posts.at(-1).body.odometer, 85300);
     pass("odometer record sets initialOdometer from the latest reading");
+
+    // ---------- reminders ----------
+    const tokenOf = (t) => t.match(/Confirmation token: ([0-9a-f]+)/)?.[1];
+
+    r = await callOrReject(client, "list_reminders", { vehicle: "tacoma" });
+    assert.ok(!r.rejected, r.text);
+    assert.match(r.text, /id 3: Rotate Tires \[NotUrgent\]/);
+    assert.match(r.text, /2027-04-15 or at 92,000/);
+    assert.match(r.text, /182 days \/ 7,100 distance left/);
+    assert.match(r.text, /id 4: Replace wiper blades \[PastDue\]/);
+    r = await callOrReject(client, "list_reminders", { vehicle: "sienna" });
+    assert.match(r.text, /no reminders/);
+    pass("list_reminders shows id, urgency, due point and what's left");
+
+    // metric/due-field validation
+    r = await callOrReject(client, "propose_reminder", { vehicle: "tacoma", description: "Brake fluid", metric: "Both", dueDate: "2028-10-01" });
+    assert.ok(r.rejected);
+    assert.match(r.text, /dueOdometer is required/);
+    r = await callOrReject(client, "propose_reminder", { vehicle: "tacoma", description: "Brake fluid", metric: "Date" });
+    assert.ok(r.rejected);
+    pass("propose_reminder requires the due fields its metric needs");
+
+    // duplicate warning
+    const before = posts.length;
+    r = await callOrReject(client, "propose_reminder", { vehicle: "tacoma", description: "Tire rotation", metric: "Odometer", dueOdometer: 91000 });
+    assert.ok(!r.rejected, r.text);
+    assert.match(r.text, /Possible duplicate: existing reminder id 3 "Rotate Tires"/);
+    assert.match(r.text, /propose_reminder_update/);
+    assert.doesNotMatch(r.text, /Replace wiper/);
+    assert.equal(posts.length, before, "propose must not write");
+    pass("propose_reminder warns about a similar existing reminder, writes nothing");
+
+    // add
+    r = await callOrReject(client, "propose_reminder", {
+      vehicle: "tacoma",
+      description: "Replace tires",
+      metric: "Both",
+      dueDate: "2031-10-01",
+      dueOdometer: 145000,
+      notes: "Michelin Defender LTX, 60k warranty",
+      tags: "tires",
+    });
+    assert.ok(!r.rejected, r.text);
+    assert.doesNotMatch(r.text, /Possible duplicate/);
+    r = await callOrReject(client, "commit_record", { confirmationToken: tokenOf(r.text) });
+    assert.ok(!r.rejected, r.text);
+    assert.match(r.text, /Saved new reminder/);
+    assert.equal(posts.at(-1).method, "POST");
+    assert.equal(posts.at(-1).path, "/api/vehicle/reminders/add");
+    assert.equal(posts.at(-1).vehicleId, 1);
+    assert.deepEqual(posts.at(-1).body, {
+      description: "Replace tires",
+      metric: "Both",
+      dueDate: "2031-10-01",
+      dueOdometer: 145000,
+      notes: "Michelin Defender LTX, 60k warranty",
+      tags: "tires",
+    });
+    pass("propose_reminder + commit_record POSTs the previewed reminder");
+
+    // update: unknown id
+    r = await callOrReject(client, "propose_reminder_update", { vehicle: "tacoma", reminderId: 99, dueOdometer: 98000 });
+    assert.ok(r.rejected);
+    assert.match(r.text, /no reminder with id 99/);
+    assert.match(r.text, /id 3: Rotate Tires/);
+    pass("propose_reminder_update rejects an unknown id and lists the real ones");
+
+    // update: move rotation forward, keep everything else
+    r = await callOrReject(client, "propose_reminder_update", { vehicle: "tacoma", reminderId: "3", dueDate: "2027-10-15", dueOdometer: 98000 });
+    assert.ok(!r.rejected, r.text);
+    assert.match(r.text, /on 2027-04-15 or at 92,000, whichever comes first -> on 2027-10-15 or at 98,000/);
+    assert.match(r.text, /Description: Rotate Tires$/m);
+    r = await callOrReject(client, "commit_record", { confirmationToken: tokenOf(r.text) });
+    assert.ok(!r.rejected, r.text);
+    assert.equal(posts.at(-1).method, "PUT");
+    assert.equal(posts.at(-1).path, "/api/vehicle/reminders/update");
+    assert.deepEqual(posts.at(-1).body, {
+      id: 3,
+      description: "Rotate Tires",
+      metric: "Both",
+      dueDate: "2027-10-15",
+      dueOdometer: 98000,
+      notes: "Every 6k",
+      tags: "tires",
+    });
+    pass("propose_reminder_update PUTs the full merged reminder");
+
+    // update keeps the unused due field, flags no-op and past-due values
+    r = await callOrReject(client, "propose_reminder_update", { vehicle: "tacoma", reminderId: 4, metric: "Odometer", dueOdometer: 80000 });
+    assert.ok(!r.rejected, r.text);
+    assert.match(r.text, /at or below the latest reading/);
+    await client.callTool({ name: "commit_record", arguments: { confirmationToken: tokenOf(r.text) } });
+    assert.equal(posts.at(-1).body.dueDate, "2026-09-01");
+    assert.equal(posts.at(-1).body.dueOdometer, 80000);
+    r = await callOrReject(client, "propose_reminder_update", { vehicle: "tacoma", reminderId: 3 });
+    assert.match(r.text, /Nothing changes/);
+    pass("update preserves the unused due field and warns on past-due / no-op changes");
 
     await client.close();
     console.log(`\n${passed} checks passed`);
