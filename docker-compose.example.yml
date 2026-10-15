@@ -1,0 +1,28 @@
+# Example: run lubelogger-mcp next to LubeLogger.
+# Copy the `lubelogger-mcp` service into your existing LubeLogger compose file (simplest),
+# or keep it separate and attach it to LubeLogger's network (see the networks block).
+
+services:
+  lubelogger-mcp:
+    build: .
+    container_name: lubelogger-mcp
+    restart: unless-stopped
+    environment:
+      # Internal address of LubeLogger as seen from this container.
+      # Same compose file: use the LubeLogger service name and its internal port (8080 by default).
+      LUBELOGGER_URL: http://lubelogger:8080
+      # Create in LubeLogger: user menu > API keys. Role "Editor" (view, add, edit) is enough.
+      LUBELOGGER_API_KEY: ${LUBELOGGER_API_KEY:?set LUBELOGGER_API_KEY in .env}
+      # Protect the endpoint. Bearer token (for clients that can send headers) and/or a secret path.
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+      MCP_PATH: ${MCP_PATH:-/mcp}
+    ports:
+      - "3000:3000"
+    # Only needed if LubeLogger lives in a different compose project:
+    # networks:
+    #   - lubelogger_net
+
+# networks:
+#   lubelogger_net:
+#     external: true
+#     name: <your-lubelogger-compose-project>_default
