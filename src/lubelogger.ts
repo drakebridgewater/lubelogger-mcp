@@ -113,11 +113,25 @@ export class LubeLoggerClient {
     return data as Vehicle[];
   }
 
-  /** Latest known odometer for a vehicle, or null if LubeLogger has none. */
+  /**
+   * Latest known odometer for a vehicle: the highest reading across LubeLogger's own "latest" endpoint and every
+   * record type we can read. Depending on version and the auto-insert setting, the endpoint can lag behind
+   * fuel/service records, so it alone is not trusted. Null if nothing has a reading; throws only if every source failed.
+   */
   async getLatestOdometer(vehicleId: number): Promise<number | null> {
-    const data = await this.request("GET", "/api/vehicle/odometerrecords/latest", { query: { vehicleId } });
-    const n = Number(typeof data === "string" ? data.replace(/[^0-9.\-]/g, "") : data);
-    return Number.isFinite(n) && n > 0 ? n : null;
+    const sources: Promise<number[]>[] = [
+      this.request("GET", "/api/vehicle/odometerrecords/latest", { query: { vehicleId } }).then((d) => [toOdometer(d)]),
+      ...(Object.keys(PATHS) as RecordKind[]).map((kind) =>
+        this.listRecords(kind, vehicleId).then((records) => records.map((r) => toOdometer(r.odometer))),
+      ),
+    ];
+    const results = await Promise.allSettled(sources);
+    const failures = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failures.length === results.length) throw failures[0]!.reason;
+
+    const readings = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+    const max = Math.max(0, ...readings.filter((n) => Number.isFinite(n)));
+    return max > 0 ? max : null;
   }
 
   async listRecords(kind: RecordKind, vehicleId: number): Promise<Record<string, unknown>[]> {
@@ -129,6 +143,10 @@ export class LubeLoggerClient {
     const data = await this.request("POST", `/api/vehicle/${PATHS[kind]}/add`, { query: { vehicleId }, body });
     return (data && typeof data === "object" ? data : { message: String(data ?? "") }) as OperationResponse;
   }
+}
+
+function toOdometer(value: unknown): number {
+  return Number(typeof value === "string" ? value.replace(/[^0-9.\-]/g, "") : value);
 }
 
 export function vehicleLabel(v: Vehicle): string {
