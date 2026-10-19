@@ -23,10 +23,14 @@ const freePort = () =>
 const vehicles = [
   { id: 1, year: 2019, make: "Toyota", model: "Tacoma", licensePlate: "ABC123" },
   { id: 2, year: 2015, make: "Toyota", model: "Sienna", licensePlate: "XYZ789" },
+  { id: 3, year: 2020, make: "Honda", model: "Civic", licensePlate: "CIV001" },
 ];
-const latestOdo = { 1: 84900, 2: 120500 };
+// The "latest" endpoint can lag other record types: Tacoma has a service record and Civic a fuel record above it.
+const latestOdo = { 1: 84900, 2: 120500, 3: 50801 };
 const existing = {
   servicerecords: { 1: [{ id: 7, date: "2026-10-14", odometer: 84932, description: "Oil change", cost: 89.5 }] },
+  gasrecords: { 3: [{ id: 11, date: "2026-10-12", odometer: "51530", fuelConsumed: 10.2, cost: 38.1 }] },
+  odometerrecords: { 3: [{ id: 12, date: "2026-09-01", initialOdometer: 50000, odometer: 50801 }] },
   // Shaped like LubeLogger 1.7.3: values are strings, dueDate is ToShortDateString() in the invariant culture.
   reminders: {
     1: [
@@ -160,8 +164,24 @@ async function main() {
     const lv = text(await client.callTool({ name: "list_vehicles", arguments: {} }));
     assert.match(lv, /Tacoma/);
     assert.match(lv, /Sienna/);
-    assert.match(lv, /84,900/);
-    pass("list_vehicles shows both vehicles with latest odometer");
+    assert.match(lv, /Tacoma.*84,932/);
+    pass("list_vehicles shows vehicles with latest odometer across record types");
+
+    // Same "latest odometer" everywhere, even when a fuel record is above the odometer endpoint (50,801 vs 51,530).
+    assert.match(lv, /Civic.*latest odometer: 51,530/);
+    assert.match(text(await client.callTool({ name: "get_latest_odometer", arguments: { vehicle: "civic" } })), /latest odometer 51,530/);
+    const civic = await callOrReject(client, "propose_service_record", {
+      vehicle: "civic",
+      date: "2026-10-14",
+      odometer: 51000,
+      description: "Cabin air filter",
+      cost: 25,
+    });
+    assert.ok(!civic.rejected, civic.text);
+    assert.match(civic.text, /Latest odometer on file: 51,530/);
+    assert.match(civic.text, /LOWER than the latest reading on file \(51,530\)/);
+    assert.equal(posts.length, 0);
+    pass("list_vehicles, get_latest_odometer and previews agree on the highest reading across record types");
 
     // propose -> nothing written, warnings surfaced
     let r = await callOrReject(client, "propose_service_record", {
@@ -262,7 +282,7 @@ async function main() {
     assert.ok(!r.rejected, r.text);
     await client.callTool({ name: "commit_record", arguments: { confirmationToken: r.text.match(/Confirmation token: ([0-9a-f]+)/)[1] } });
     assert.equal(posts.at(-1).path, "/api/vehicle/odometerrecords/add");
-    assert.equal(posts.at(-1).body.initialOdometer, 84900);
+    assert.equal(posts.at(-1).body.initialOdometer, 84932);
     assert.equal(posts.at(-1).body.odometer, 85300);
     pass("odometer record sets initialOdometer from the latest reading");
 
