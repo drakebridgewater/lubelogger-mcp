@@ -1,9 +1,12 @@
 import { randomBytes } from "node:crypto";
 import type { RecordKind } from "./lubelogger.js";
 
+/** A LubeLogger record type, or a reminder to add or update. */
+export type PendingKind = RecordKind | "reminder" | "reminderUpdate";
+
 export interface PendingRecord {
   token: string;
-  kind: RecordKind;
+  kind: PendingKind;
   vehicleId: number;
   vehicleLabel: string;
   /** Exact body that will be sent to LubeLogger on commit. */

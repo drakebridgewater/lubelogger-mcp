@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { loadConfig } from "./config.js";
 import { LubeLoggerClient } from "./lubelogger.js";
 import { PendingStore } from "./pending.js";
+import { registerReminderTools } from "./reminders.js";
 import { registerTools } from "./tools.js";
 
 const config = loadConfig();
@@ -17,11 +18,14 @@ const INSTRUCTIONS = [
   "and call commit_record only after they explicitly confirm.",
   "Odometer is required for every record. Receipts often lack it: ask the user (typed value or dashboard photo). Never guess it.",
   "If a vehicle is ambiguous, call list_vehicles and ask.",
+  "Reminders (e.g. tire rotation) use the same propose/commit flow: check list_reminders first and prefer propose_reminder_update over a duplicate.",
 ].join(" ");
 
 function createServer(): McpServer {
   const server = new McpServer({ name: "lubelogger-mcp", version: "0.1.0" }, { instructions: INSTRUCTIONS });
-  registerTools(server, { client, pending, ttlMinutes: config.CONFIRM_TTL_MINUTES });
+  const deps = { client, pending, ttlMinutes: config.CONFIRM_TTL_MINUTES };
+  registerTools(server, deps);
+  registerReminderTools(server, deps);
   return server;
 }
 

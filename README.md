@@ -1,6 +1,6 @@
 # lubelogger-mcp
 
-An [MCP](https://modelcontextprotocol.io) server that lets Claude log service, repair, upgrade, fuel and odometer records into your self-hosted [LubeLogger](https://github.com/hargata/lubelog).
+An [MCP](https://modelcontextprotocol.io) server that lets Claude log service, repair, upgrade, fuel and odometer records into your self-hosted [LubeLogger](https://github.com/hargata/lubelog), and manage maintenance reminders.
 
 You send Claude a photo or PDF of an invoice or receipt. Claude reads it, extracts the fields, shows you a preview, and after you confirm, writes the record to LubeLogger.
 
@@ -29,7 +29,10 @@ photo/PDF  ->  Claude reads it  ->  propose_* tool  ->  PREVIEW + warnings + tok
 | `propose_service_record` | Service, repair or upgrade record (`recordType`), from an invoice or work order |
 | `propose_fuel_record` | Fuel or EV charge, from a receipt (supports partial fills, missed fill-ups, EV state of charge) |
 | `propose_odometer_record` | Standalone odometer reading (e.g. from a dashboard photo) |
-| `commit_record` | Save a previously proposed record by token |
+| `list_reminders` | A vehicle's reminders with id, urgency, due date/odometer and what's left |
+| `propose_reminder` | New reminder due at a date, an odometer reading, or both (whichever comes first) |
+| `propose_reminder_update` | Change an existing reminder by id, e.g. move "Rotate Tires" forward after a rotation. Unspecified fields are kept |
+| `commit_record` | Save a previously proposed record or reminder by token |
 
 Vehicles can be referenced by id or any part of the name/plate (`tacoma`, `ABC123`). If a name matches more than one vehicle, the tool errors and Claude asks you.
 
@@ -39,6 +42,7 @@ Vehicles can be referenced by id or any part of the name/plate (`tacoma`, `ABC12
 - Possible duplicate (same date and same odometer or cost, for that record type)
 - Date in the future
 - Fuel: implausible price per unit or quantity (amount/cost swapped, wrong units)
+- Reminders: a similar reminder already exists (so Claude offers an update instead of a duplicate), the due date or odometer is already past, or an update changes nothing
 
 ## Setup
 
@@ -93,10 +97,11 @@ claude mcp add --transport http lubelogger http://<server>:3000/mcp \
 
 ## Limitations
 
-- Add-only. No editing or deleting records (do that in the LubeLogger UI).
+- Records are add-only. No editing or deleting records (do that in the LubeLogger UI). Reminders can be updated but not deleted.
+- LubeLogger's API doesn't expose a reminder's recurring settings. Updates leave them as they are; set recurrence in the UI.
 - The original invoice/receipt isn't attached to the record. LubeLogger has `/api/documents/upload` and a per-record `files` field, so this is a feasible follow-up.
 - Pending previews live in memory, so a container restart drops them (just propose again).
-- Tax, reminder and planner records aren't covered yet.
+- Tax and planner records aren't covered yet.
 - Written against LubeLogger's published API definition (`wwwroot/defaults/api.json` on `main`) and tested end-to-end against a mock of it. It has **not** been run against a live instance. See the first-run checklist.
 
 ## First-run checklist
@@ -116,4 +121,4 @@ npm test      # builds, then runs an end-to-end smoke test (real server + MCP cl
 
 ## LubeLogger endpoints used
 
-`GET /api/vehicles`, `GET /api/vehicle/odometerrecords/latest`, `GET /api/vehicle/{servicerecords|repairrecords|upgraderecords|gasrecords|odometerrecords}` (duplicate check), `POST /api/vehicle/{...}/add`. Requests send `x-api-key` and the `culture-invariant` header so numbers and dates are locale-independent.
+`GET /api/vehicles`, `GET /api/vehicle/odometerrecords/latest`, `GET /api/vehicle/{servicerecords|repairrecords|upgraderecords|gasrecords|odometerrecords}` (duplicate check), `POST /api/vehicle/{...}/add`, `GET /api/vehicle/reminders`, `POST /api/vehicle/reminders/add`, `PUT /api/vehicle/reminders/update`. Requests send `x-api-key` and the `culture-invariant` header so numbers and dates are locale-independent.
